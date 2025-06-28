@@ -28,7 +28,7 @@ jobs:
       env:
         TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       run: |
-        python fetch_kline.py --datasource mootdx --workers 5
+        python fetch_kline.py --datasource akshare --workers 5
         
     - name: Commit and push data
       run: |
