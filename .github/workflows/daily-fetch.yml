@@ -1,4 +1,4 @@
-name: Daily Stock Data Fetch
+name: Daily Stock Analysis and Notification
 
 on:
   schedule:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch: # 允许手动触发
 
 jobs:
-  fetch-data:
+  stock-analysis:
     runs-on: ubuntu-latest
     
     steps:
@@ -19,21 +19,69 @@ jobs:
       with:
         python-version: '3.9'
         
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+        
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
-    - name: Run fetch script
+    - name: Step 1 - Fetch stock data
       env:
         TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
       run: |
-        python fetch_kline.py --datasource akshare --workers 5
+        echo "开始获取股票数据..."
+        python fetch_kline.py --datasource akshare --workers 5 --out ./data
+        echo "股票数据获取完成"
+        
+    - name: Step 2 - Select stocks
+      run: |
+        echo "开始进行股票筛选..."
+        python select_stock.py
+        echo "股票筛选完成"
+        
+    - name: Step 3 - Send WeChat notification
+      env:
+        WECHAT_WEBHOOK: ${{ secrets.WECHAT_WEBHOOK }}
+        WECHAT_SECRET: ${{ secrets.WECHAT_SECRET }}
+      run: |
+        echo "开始发送微信通知..."
+        python wechatsend.py
+        echo "微信通知发送完成"
+        
+    - name: Check if data changed
+      id: check_changes
+      run: |
+        git add -A
+        if git diff --staged --quiet; then
+          echo "has_changes=false" >> $GITHUB_OUTPUT
+          echo "没有数据更新"
+        else
+          echo "has_changes=true" >> $GITHUB_OUTPUT
+          echo "检测到数据更新"
+        fi
         
     - name: Commit and push data
+      if: steps.check_changes.outputs.has_changes == 'true'
       run: |
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
-        git add data/
-        git diff --staged --quiet || git commit -m "Auto update stock data $(date '+%Y-%m-%d %H:%M:%S')"
+        git add -A
+        git commit -m "Auto update: stock data and analysis $(date '+%Y-%m-%d %H:%M:%S')"
         git push
+        
+    - name: Upload logs as artifact
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: execution-logs-${{ github.run_number }}
+        path: |
+          *.log
+          logs/
+        retention-days: 7
