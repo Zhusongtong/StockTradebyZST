@@ -4,3 +4,6 @@
 2025-06-28 06:27:06,609 [INFO] fetch_kline.py:81 筛选得到 2011 只股票
 2025-06-28 06:27:06,614 [INFO] fetch_kline.py:336 开始抓取 2011 支股票 | 数据源:akshare | 频率:day | 日期:20190101 → 20250628
 2025-06-28 06:31:45,635 [INFO] fetch_kline.py:363 全部任务完成，数据已保存至 /home/runner/work/StockTradebyZST/StockTradebyZST/data
+2025-06-28 08:17:49,858 [INFO] fetch_kline.py:81 筛选得到 2011 只股票
+2025-06-28 08:17:49,863 [INFO] fetch_kline.py:336 开始抓取 2011 支股票 | 数据源:akshare | 频率:day | 日期:20190101 → 20250628
+2025-06-28 08:23:39,440 [INFO] fetch_kline.py:363 全部任务完成，数据已保存至 /home/runner/work/StockTradebyZST/StockTradebyZST/data
