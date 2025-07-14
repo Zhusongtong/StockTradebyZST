@@ -40,15 +40,16 @@ for noisy in ("httpx", "urllib3", "_client", "akshare"):
 
 def _get_mktcap_ak() -> pd.DataFrame:
     """实时快照，返回列：code, mktcap（单位：元）"""
-    for attempt in range(1, 4):
+    for attempt in range(1, 5):  # 增加重试次数
         try:
             df = ak.stock_zh_a_spot_em()
             break
         except Exception as e:
-            logger.warning("AKShare 获取市值快照失败(%d/3): %s", attempt, e)
-            time.sleep(backoff := random.uniform(1, 3) * attempt)
+            logger.warning("AKShare 获取市值快照失败(%d/4): %s", attempt, e)
+            backoff = random.uniform(2, 5) * attempt  # 增加退避时间
+            time.sleep(backoff)
     else:
-        raise RuntimeError("AKShare 连续三次拉取市值快照失败！")
+        raise RuntimeError("AKShare 连续四次拉取市值快照失败！")
 
     df = df[["代码", "总市值"]].rename(columns={"代码": "code", "总市值": "mktcap"})
     df["mktcap"] = pd.to_numeric(df["mktcap"], errors="coerce")
@@ -117,7 +118,7 @@ def _to_ts_code(code: str) -> str:
 def _get_kline_tushare(code: str, start: str, end: str, adjust: str) -> pd.DataFrame:
     ts_code = _to_ts_code(code)
     adj_flag = None if adjust == "" else adjust
-    for attempt in range(1, 4):
+    for attempt in range(1, 5):  # 增加重试次数
         try:
             df = ts.pro_bar(
                 ts_code=ts_code,
@@ -128,9 +129,10 @@ def _get_kline_tushare(code: str, start: str, end: str, adjust: str) -> pd.DataF
             )
             break
         except Exception as e:
-            logger.warning("Tushare 拉取 %s 失败(%d/3): %s", code, attempt, e)
-            time.sleep(random.uniform(1, 2) * attempt)
+            logger.warning("Tushare 拉取 %s 失败(%d/4): %s", code, attempt, e)
+            time.sleep(random.uniform(2, 4) * attempt)  # 增加延迟
     else:
+        logger.error("Tushare 拉取 %s 最终失败", code)
         return pd.DataFrame()
 
     if df is None or df.empty:
@@ -148,7 +150,10 @@ def _get_kline_tushare(code: str, start: str, end: str, adjust: str) -> pd.DataF
 # ---------- AKShare 工具函数 ---------- #
 
 def _get_kline_akshare(code: str, start: str, end: str, adjust: str) -> pd.DataFrame:
-    for attempt in range(1, 4):
+    # 请求前随机延迟，避免过于频繁
+    time.sleep(random.uniform(0.5, 1.5))
+    
+    for attempt in range(1, 5):  # 增加重试次数
         try:
             df = ak.stock_zh_a_hist(
                 symbol=code,
@@ -159,9 +164,12 @@ def _get_kline_akshare(code: str, start: str, end: str, adjust: str) -> pd.DataF
             )
             break
         except Exception as e:
-            logger.warning("AKShare 拉取 %s 失败(%d/3): %s", code, attempt, e)
-            time.sleep(random.uniform(1, 2) * attempt)
+            logger.warning("AKShare 拉取 %s 失败(%d/4): %s", code, attempt, e)
+            # 指数退避，失败越多延迟越长
+            backoff = random.uniform(3, 6) * attempt
+            time.sleep(backoff)
     else:
+        logger.error("AKShare 拉取 %s 最终失败", code)
         return pd.DataFrame()
 
     if df is None or df.empty:
@@ -233,6 +241,7 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
 
 def drop_dup_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df.loc[:, ~df.columns.duplicated()]
+
 # ---------- 单只股票抓取 ---------- #
 def fetch_one(
     code: str,
@@ -282,10 +291,38 @@ def fetch_one(
             break
         except Exception:
             logger.exception("%s 第 %d 次抓取失败", code, attempt)
-            time.sleep(random.uniform(1, 3) * attempt)  # 指数退避
+            time.sleep(random.uniform(2, 5) * attempt)  # 增加退避时间
     else:
         logger.error("%s 三次抓取均失败，已跳过！", code)
 
+# ---------- 分批处理函数 ---------- #
+def process_batch(codes_batch: List[str], start: str, end: str, out_dir: Path, 
+                 datasource: str, freq_code: int, workers: int, batch_num: int):
+    """处理一批股票代码"""
+    logger.info(f"开始处理第 {batch_num} 批，共 {len(codes_batch)} 只股票")
+    
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        futures = [
+            executor.submit(
+                fetch_one,
+                code,
+                start,
+                end,
+                out_dir,
+                True,
+                datasource,
+                freq_code,
+            )
+            for code in codes_batch
+        ]
+        
+        completed_count = 0
+        for future in as_completed(futures):
+            completed_count += 1
+            if completed_count % 10 == 0:  # 每完成10个打印一次进度
+                logger.info(f"第 {batch_num} 批已完成 {completed_count}/{len(codes_batch)} 只股票")
+    
+    logger.info(f"第 {batch_num} 批处理完成")
 
 # ---------- 主入口 ---------- #
 
@@ -299,7 +336,9 @@ def main():
     parser.add_argument("--start", default="20190101", help="起始日期 YYYYMMDD 或 'today'")
     parser.add_argument("--end", default="today", help="结束日期 YYYYMMDD 或 'today'")
     parser.add_argument("--out", default="./data", help="输出目录")
-    parser.add_argument("--workers", type=int, default=10, help="并发线程数")
+    parser.add_argument("--workers", type=int, default=5, help="并发线程数（默认降低到5）")
+    parser.add_argument("--batch-size", type=int, default=50, help="分批处理的批次大小")
+    parser.add_argument("--batch-delay", type=int, default=10, help="批次间休息时间（秒）")
     args = parser.parse_args()
 
     # ---------- Token 处理 ---------- #
@@ -317,6 +356,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ---------- 市值快照 & 股票池 ---------- #
+    logger.info("正在获取市值快照...")
     mktcap_df = _get_mktcap_ak()    
 
     codes_from_filter = get_constituents(
@@ -334,31 +374,36 @@ def main():
         sys.exit(1)
 
     logger.info(
-        "开始抓取 %d 支股票 | 数据源:%s | 频率:%s | 日期:%s → %s",
+        "开始抓取 %d 支股票 | 数据源:%s | 频率:%s | 日期:%s → %s | 线程数:%d | 批次大小:%d",
         len(codes),
         args.datasource,
         _FREQ_MAP[args.frequency],
         start,
         end,
+        args.workers,
+        args.batch_size,
     )
 
-    # ---------- 多线程抓取 ---------- #
-    with ThreadPoolExecutor(max_workers=args.workers) as executor:
-        futures = [
-            executor.submit(
-                fetch_one,
-                code,
-                start,
-                end,
-                out_dir,
-                True,
-                args.datasource,
-                args.frequency,
+    # ---------- 分批多线程抓取 ---------- #
+    total_batches = (len(codes) + args.batch_size - 1) // args.batch_size
+    
+    for i in range(0, len(codes), args.batch_size):
+        batch_codes = codes[i:i + args.batch_size]
+        batch_num = i // args.batch_size + 1
+        
+        try:
+            process_batch(
+                batch_codes, start, end, out_dir, 
+                args.datasource, args.frequency, args.workers, batch_num
             )
-            for code in codes
-        ]
-        for _ in tqdm(as_completed(futures), total=len(futures), desc="下载进度"):
-            pass
+        except Exception as e:
+            logger.error(f"第 {batch_num} 批处理出现异常: {e}")
+            continue
+        
+        # 批次间休息，避免过于频繁请求
+        if i + args.batch_size < len(codes):
+            logger.info(f"第 {batch_num}/{total_batches} 批完成，休息 {args.batch_delay} 秒...")
+            time.sleep(args.batch_delay)
 
     logger.info("全部任务完成，数据已保存至 %s", out_dir.resolve())
 
