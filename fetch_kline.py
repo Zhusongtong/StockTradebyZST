@@ -14,7 +14,7 @@ from typing import List, Optional
 
 import akshare as ak
 import pandas as pd
-import tushare as ts
+import requests
 from mootdx.quotes import Quotes
 from tqdm import tqdm
 
@@ -40,16 +40,15 @@ for noisy in ("httpx", "urllib3", "_client", "akshare"):
 
 def _get_mktcap_ak() -> pd.DataFrame:
     """实时快照，返回列：code, mktcap（单位：元）"""
-    for attempt in range(1, 5):  # 增加重试次数
+    for attempt in range(1, 4):
         try:
             df = ak.stock_zh_a_spot_em()
             break
         except Exception as e:
-            logger.warning("AKShare 获取市值快照失败(%d/4): %s", attempt, e)
-            backoff = random.uniform(2, 5) * attempt  # 增加退避时间
-            time.sleep(backoff)
+            logger.warning("AKShare 获取市值快照失败(%d/3): %s", attempt, e)
+            time.sleep(backoff := random.uniform(1, 3) * attempt)
     else:
-        raise RuntimeError("AKShare 连续四次拉取市值快照失败！")
+        raise RuntimeError("AKShare 连续三次拉取市值快照失败！")
 
     df = df[["代码", "总市值"]].rename(columns={"代码": "code", "总市值": "mktcap"})
     df["mktcap"] = pd.to_numeric(df["mktcap"], errors="coerce")
@@ -83,16 +82,6 @@ def get_constituents(
     return codes
 
 # --------------------------- 历史 K 线抓取 --------------------------- #
-COLUMN_MAP_HIST_AK = {
-    "日期": "date",
-    "开盘": "open",
-    "收盘": "close",
-    "最高": "high",
-    "最低": "low",
-    "成交量": "volume",
-    "成交额": "amount",
-    "换手率": "turnover",
-}
 
 _FREQ_MAP = {
     0: "5m",
@@ -109,129 +98,138 @@ _FREQ_MAP = {
     11: "year",
 }
 
-# ---------- Tushare 工具函数 ---------- #
-
-def _to_ts_code(code: str) -> str:
-    return f"{code.zfill(6)}.SH" if code.startswith(("60", "68", "9")) else f"{code.zfill(6)}.SZ"
-
-
-def _get_kline_tushare(code: str, start: str, end: str, adjust: str) -> pd.DataFrame:
-    ts_code = _to_ts_code(code)
-    adj_flag = None if adjust == "" else adjust
-    for attempt in range(1, 5):  # 增加重试次数
-        try:
-            df = ts.pro_bar(
-                ts_code=ts_code,
-                adj=adj_flag,
-                start_date=start,
-                end_date=end,
-                freq="D",
-            )
-            break
-        except Exception as e:
-            logger.warning("Tushare 拉取 %s 失败(%d/4): %s", code, attempt, e)
-            time.sleep(random.uniform(2, 4) * attempt)  # 增加延迟
-    else:
-        logger.error("Tushare 拉取 %s 最终失败", code)
-        return pd.DataFrame()
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    df = df.rename(columns={"trade_date": "date", "vol": "volume"})[
-        ["date", "open", "close", "high", "low", "volume"]
-    ].copy()
-    df["date"] = pd.to_datetime(df["date"])
-    df[[c for c in df.columns if c != "date"]] = df[[c for c in df.columns if c != "date"]].apply(
-        pd.to_numeric, errors="coerce"
-    )    
-    return df.sort_values("date").reset_index(drop=True)
-
-# ---------- AKShare 工具函数 ---------- #
-
-def _get_kline_akshare(code: str, start: str, end: str, adjust: str) -> pd.DataFrame:
-    # 请求前随机延迟，避免过于频繁
-    time.sleep(random.uniform(0.5, 1.5))
-    
-    for attempt in range(1, 5):  # 增加重试次数
-        try:
-            df = ak.stock_zh_a_hist(
-                symbol=code,
-                period="daily",
-                start_date=start,
-                end_date=end,
-                adjust=adjust,
-            )
-            break
-        except Exception as e:
-            logger.warning("AKShare 拉取 %s 失败(%d/4): %s", code, attempt, e)
-            # 指数退避，失败越多延迟越长
-            backoff = random.uniform(3, 6) * attempt
-            time.sleep(backoff)
-    else:
-        logger.error("AKShare 拉取 %s 最终失败", code)
-        return pd.DataFrame()
-
-    if df is None or df.empty:
-        return pd.DataFrame()
-
-    df = (
-        df[list(COLUMN_MAP_HIST_AK)]
-        .rename(columns=COLUMN_MAP_HIST_AK)
-        .assign(date=lambda x: pd.to_datetime(x["date"]))
-    )
-    df[[c for c in df.columns if c != "date"]] = df[[c for c in df.columns if c != "date"]].apply(
-        pd.to_numeric, errors="coerce"
-    )
-    df = df[["date", "open", "close", "high", "low", "volume"]]
-    return df.sort_values("date").reset_index(drop=True)
-
-# ---------- Mootdx 工具函数 ---------- #
+# ---------- Mootdx 数据源 ---------- #
 
 def _get_kline_mootdx(code: str, start: str, end: str, adjust: str, freq_code: int) -> pd.DataFrame:    
+    """使用Mootdx获取K线数据"""
     symbol = code.zfill(6)
     freq = _FREQ_MAP.get(freq_code, "day")
     client = Quotes.factory(market="std")
+    
     try:
         df = client.bars(symbol=symbol, frequency=freq, adjust=adjust or None)
     except Exception as e:
-        logger.warning("Mootdx 拉取 %s 失败: %s", code, e)
+        logger.debug("Mootdx 拉取 %s 失败: %s", code, e)
         return pd.DataFrame()
+        
     if df is None or df.empty:
         return pd.DataFrame()
     
+    # 标准化列名
     df = df.rename(
-        columns={"datetime": "date", "open": "open", "high": "high", "low": "low", "close": "close", "vol": "volume"}
+        columns={
+            "datetime": "date", 
+            "open": "open", 
+            "high": "high", 
+            "low": "low", 
+            "close": "close", 
+            "vol": "volume"
+        }
     )
+    
+    # 处理日期和数据筛选
     df["date"] = pd.to_datetime(df["date"]).dt.normalize()
     start_ts = pd.to_datetime(start, format="%Y%m%d")
     end_ts = pd.to_datetime(end, format="%Y%m%d")
     df = df[(df["date"].dt.date >= start_ts.date()) & (df["date"].dt.date <= end_ts.date())].copy()    
     df = df.sort_values("date").reset_index(drop=True)    
+    
     return df[["date", "open", "close", "high", "low", "volume"]]
 
-# ---------- 通用接口 ---------- #
+# ---------- 东方财富数据源 (备用) ---------- #
 
-def get_kline(
-    code: str,
-    start: str,
-    end: str,
-    adjust: str,
-    datasource: str,
-    freq_code: int = 4,
-) -> pd.DataFrame:
-    if datasource == "tushare":
-        return _get_kline_tushare(code, start, end, adjust)
-    elif datasource == "akshare":
-        return _get_kline_akshare(code, start, end, adjust)
-    elif datasource == "mootdx":        
-        return _get_kline_mootdx(code, start, end, adjust, freq_code)
+def _create_eastmoney_url(code: str, limit: int = 10000) -> str:
+    """构建东方财富API URL"""
+    if code.startswith("6"):
+        secid = f"1.{code}"
+    elif code.startswith(("0", "3")):
+        secid = f"0.{code}"
     else:
-        raise ValueError("datasource 仅支持 'tushare', 'akshare' 或 'mootdx'")
+        secid = f"0.{code}"
+    
+    timestamp = int(round(time.time() * 1000))
+    
+    base_url = "http://55.push2his.eastmoney.com/api/qt/stock/kline/get"
+    params = {
+        "secid": secid,
+        "ut": "fa5fd1943c7b386f172d6893dbfba10b",
+        "fields1": "f1,f2,f3,f4,f5,f6",
+        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        "klt": "101",  # 日K线
+        "fqt": "1",    # 前复权
+        "end": "20500101",
+        "lmt": str(limit),
+        "_": str(timestamp)
+    }
+    
+    url = base_url + "?" + "&".join([f"{k}={v}" for k, v in params.items()])
+    return url
+
+def _parse_eastmoney_data(response_text: str, code: str, start: str, end: str) -> pd.DataFrame:
+    """解析东方财富API返回的数据"""
+    try:
+        data = json.loads(response_text)
+        if not data.get('data') or not data['data'].get('klines'):
+            return pd.DataFrame()
+        
+        klines = data['data']['klines']
+        
+        # 解析K线数据
+        rows = []
+        for line in klines:
+            parts = line.split(',')
+            if len(parts) >= 6:
+                rows.append({
+                    'date': parts[0],
+                    'open': float(parts[1]),
+                    'close': float(parts[2]),
+                    'high': float(parts[3]),
+                    'low': float(parts[4]),
+                    'volume': float(parts[5])
+                })
+        
+        if not rows:
+            return pd.DataFrame()
+        
+        df = pd.DataFrame(rows)
+        df['date'] = pd.to_datetime(df['date'])
+        
+        # 按日期范围筛选
+        start_ts = pd.to_datetime(start, format="%Y%m%d")
+        end_ts = pd.to_datetime(end, format="%Y%m%d")
+        df = df[(df['date'].dt.date >= start_ts.date()) & 
+                (df['date'].dt.date <= end_ts.date())].copy()
+        
+        return df.sort_values('date').reset_index(drop=True)
+        
+    except Exception as e:
+        logger.debug("解析东方财富数据失败 %s: %s", code, e)
+        return pd.DataFrame()
+
+def _get_kline_eastmoney(code: str, start: str, end: str) -> pd.DataFrame:
+    """使用东方财富API获取K线数据"""
+    url = _create_eastmoney_url(code)
+    
+    for attempt in range(1, 4):
+        try:
+            response = requests.get(url, timeout=10)
+            response.raise_for_status()
+            df = _parse_eastmoney_data(response.text, code, start, end)
+            if not df.empty:
+                return df
+        except Exception as e:
+            logger.debug("东方财富拉取 %s 第 %d 次失败: %s", code, attempt, e)
+            time.sleep(random.uniform(0.5, 1.5) * attempt)
+    
+    return pd.DataFrame()
 
 # ---------- 数据校验 ---------- #
 
 def validate(df: pd.DataFrame) -> pd.DataFrame:
+    """数据校验和清理"""
+    if df.empty:
+        return df
+        
     df = df.drop_duplicates(subset="date").sort_values("date").reset_index(drop=True)
     if df["date"].isna().any():
         raise ValueError("存在缺失日期！")
@@ -240,113 +238,108 @@ def validate(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def drop_dup_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """删除重复列"""
     return df.loc[:, ~df.columns.duplicated()]
 
-# ---------- 单只股票抓取 ---------- #
+# ---------- 单只股票抓取 (支持备用数据源) ---------- #
+
 def fetch_one(
     code: str,
     start: str,
     end: str,
     out_dir: Path,
     incremental: bool,
-    datasource: str,
     freq_code: int,
+    use_backup: bool = True,
 ):
-    
+    """抓取单只股票的K线数据，支持备用数据源"""
     csv_path = out_dir / f"{code}.csv"
 
     # 增量更新：若本地已有数据则从最后一天开始
+    original_start = start
     if incremental and csv_path.exists():
         try:
             existing = pd.read_csv(csv_path, parse_dates=["date"])
             last_date = existing["date"].max()
             if last_date.date() > pd.to_datetime(end, format="%Y%m%d").date():
                 logger.debug("%s 已是最新，无需更新", code)
-                return
+                return {"code": code, "status": "up_to_date", "source": "local"}
             start = last_date.strftime("%Y%m%d")
         except Exception:
             logger.exception("读取 %s 失败，将重新下载", csv_path)
+            start = original_start
 
+    # 首先尝试使用 Mootdx
+    new_df = pd.DataFrame()
+    data_source = "none"
+    
     for attempt in range(1, 4):
         try:            
-            new_df = get_kline(code, start, end, "qfq", datasource, freq_code)
-            if new_df.empty:
-                logger.debug("%s 无新数据", code)
+            new_df = _get_kline_mootdx(code, start, end, "qfq", freq_code)
+            if not new_df.empty:
+                data_source = "mootdx"
                 break
-            new_df = validate(new_df)
-            if csv_path.exists() and incremental:
-                old_df = pd.read_csv(
-                    csv_path,
-                    parse_dates=["date"],
-                    index_col=False
-                )
-                old_df = drop_dup_columns(old_df)
-                new_df = drop_dup_columns(new_df)
-                new_df = (
-                    pd.concat([old_df, new_df], ignore_index=True)
-                    .drop_duplicates(subset="date")
-                    .sort_values("date")
-                )
-            new_df.to_csv(csv_path, index=False)
-            break
         except Exception:
-            logger.exception("%s 第 %d 次抓取失败", code, attempt)
-            time.sleep(random.uniform(2, 5) * attempt)  # 增加退避时间
-    else:
-        logger.error("%s 三次抓取均失败，已跳过！", code)
-
-# ---------- 分批处理函数 ---------- #
-def process_batch(codes_batch: List[str], start: str, end: str, out_dir: Path, 
-                 datasource: str, freq_code: int, workers: int, batch_num: int):
-    """处理一批股票代码"""
-    logger.info(f"开始处理第 {batch_num} 批，共 {len(codes_batch)} 只股票")
+            logger.debug("%s Mootdx 第 %d 次抓取失败", code, attempt)
+            time.sleep(random.uniform(0.5, 1.5) * attempt)
     
-    with ThreadPoolExecutor(max_workers=workers) as executor:
-        futures = [
-            executor.submit(
-                fetch_one,
-                code,
-                start,
-                end,
-                out_dir,
-                True,
-                datasource,
-                freq_code,
-            )
-            for code in codes_batch
-        ]
+    # 如果 Mootdx 失败且启用备用数据源，尝试东方财富
+    if new_df.empty and use_backup and freq_code == 4:  # 仅日线支持备用源
+        logger.info("%s Mootdx拉取失败，尝试东方财富备用数据源", code)
+        new_df = _get_kline_eastmoney(code, start, end)
+        if not new_df.empty:
+            data_source = "eastmoney"
+    
+    # 处理数据
+    if new_df.empty:
+        logger.warning("%s 所有数据源均无法获取数据", code)
+        return {"code": code, "status": "failed", "source": "none"}
+    
+    try:
+        new_df = validate(new_df)
         
-        completed_count = 0
-        for future in as_completed(futures):
-            completed_count += 1
-            if completed_count % 10 == 0:  # 每完成10个打印一次进度
-                logger.info(f"第 {batch_num} 批已完成 {completed_count}/{len(codes_batch)} 只股票")
-    
-    logger.info(f"第 {batch_num} 批处理完成")
+        # 合并新旧数据
+        if csv_path.exists() and incremental:
+            old_df = pd.read_csv(csv_path, parse_dates=["date"], index_col=False)
+            old_df = drop_dup_columns(old_df)
+            new_df = drop_dup_columns(new_df)
+            new_df = (
+                pd.concat([old_df, new_df], ignore_index=True)
+                .drop_duplicates(subset="date")
+                .sort_values("date")
+            )
+        
+        new_df.to_csv(csv_path, index=False)
+        logger.debug("%s 数据更新完成 (来源: %s)", code, data_source)
+        return {"code": code, "status": "success", "source": data_source}
+        
+    except Exception as e:
+        logger.error("%s 数据处理失败: %s", code, e)
+        return {"code": code, "status": "failed", "source": data_source, "error": str(e)}
 
 # ---------- 主入口 ---------- #
 
 def main():
-    parser = argparse.ArgumentParser(description="按市值筛选 A 股并抓取历史 K 线")
-    parser.add_argument("--datasource", choices=["tushare", "akshare", "mootdx"], default="mootdx", help="历史 K 线数据源")
-    parser.add_argument("--frequency", type=int, choices=list(_FREQ_MAP.keys()), default=4, help="K线频率编码，参见说明")
-    parser.add_argument("--exclude-gem", default=True, help="True则排除创业板/科创板/北交所")
-    parser.add_argument("--min-mktcap", type=float, default=5e9, help="最小总市值（含），单位：元")
-    parser.add_argument("--max-mktcap", type=float, default=float("+inf"), help="最大总市值（含），单位：元，默认无限制")
-    parser.add_argument("--start", default="20190101", help="起始日期 YYYYMMDD 或 'today'")
-    parser.add_argument("--end", default="today", help="结束日期 YYYYMMDD 或 'today'")
-    parser.add_argument("--out", default="./data", help="输出目录")
-    parser.add_argument("--workers", type=int, default=5, help="并发线程数（默认降低到5）")
-    parser.add_argument("--batch-size", type=int, default=50, help="分批处理的批次大小")
-    parser.add_argument("--batch-delay", type=int, default=10, help="批次间休息时间（秒）")
+    parser = argparse.ArgumentParser(description="使用Mootdx+东方财富备用源按市值筛选A股并抓取历史K线")
+    parser.add_argument("--frequency", type=int, choices=list(_FREQ_MAP.keys()), default=4, 
+                       help="K线频率编码: 0=5m, 1=15m, 2=30m, 3=1h, 4=day, 5=week, 6=mon, 7=1m, 8=1m, 9=day, 10=3mon, 11=year")
+    parser.add_argument("--exclude-gem", action="store_true", default=True, 
+                       help="排除创业板/科创板/北交所")
+    parser.add_argument("--min-mktcap", type=float, default=5e9, 
+                       help="最小总市值（含），单位：元，默认50亿")
+    parser.add_argument("--max-mktcap", type=float, default=float("+inf"), 
+                       help="最大总市值（含），单位：元，默认无限制")
+    parser.add_argument("--start", default="20190101", 
+                       help="起始日期 YYYYMMDD 或 'today'")
+    parser.add_argument("--end", default="today", 
+                       help="结束日期 YYYYMMDD 或 'today'")
+    parser.add_argument("--out", default="./data", 
+                       help="输出目录")
+    parser.add_argument("--workers", type=int, default=10, 
+                       help="并发线程数")
+    parser.add_argument("--no-backup", action="store_true", 
+                       help="禁用备用数据源，仅使用Mootdx")
     args = parser.parse_args()
-
-    # ---------- Token 处理 ---------- #
-    if args.datasource == "tushare":
-        ts_token = ""  # 在这里补充token
-        ts.set_token(ts_token)
-        global pro
-        pro = ts.pro_api()
 
     # ---------- 日期解析 ---------- #
     start = dt.date.today().strftime("%Y%m%d") if args.start.lower() == "today" else args.start
@@ -355,8 +348,14 @@ def main():
     out_dir = Path(args.out)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    use_backup = not args.no_backup and args.frequency == 4  # 仅日线支持备用源
+    
+    logger.info("数据源配置: Mootdx(主) + %s", 
+                "东方财富(备用)" if use_backup else "无备用源")
+    logger.info("K线频率: %s", _FREQ_MAP[args.frequency])
+
     # ---------- 市值快照 & 股票池 ---------- #
-    logger.info("正在获取市值快照...")
+    logger.info("获取市值快照数据...")
     mktcap_df = _get_mktcap_ak()    
 
     codes_from_filter = get_constituents(
@@ -365,6 +364,7 @@ def main():
         args.exclude_gem,
         mktcap_df=mktcap_df,
     )    
+    
     # 加上本地已有的股票，确保旧数据也能更新
     local_codes = [p.stem for p in out_dir.glob("*.csv")]
     codes = sorted(set(codes_from_filter) | set(local_codes))
@@ -374,39 +374,74 @@ def main():
         sys.exit(1)
 
     logger.info(
-        "开始抓取 %d 支股票 | 数据源:%s | 频率:%s | 日期:%s → %s | 线程数:%d | 批次大小:%d",
+        "开始抓取 %d 支股票 | 主源:mootdx | 备用源:%s | 频率:%s | 日期:%s → %s",
         len(codes),
-        args.datasource,
+        "东方财富" if use_backup else "无",
         _FREQ_MAP[args.frequency],
         start,
         end,
-        args.workers,
-        args.batch_size,
     )
 
-    # ---------- 分批多线程抓取 ---------- #
-    total_batches = (len(codes) + args.batch_size - 1) // args.batch_size
-    
-    for i in range(0, len(codes), args.batch_size):
-        batch_codes = codes[i:i + args.batch_size]
-        batch_num = i // args.batch_size + 1
-        
-        try:
-            process_batch(
-                batch_codes, start, end, out_dir, 
-                args.datasource, args.frequency, args.workers, batch_num
+    # ---------- 统计变量 ---------- #
+    results = {
+        "success": 0,
+        "failed": 0,
+        "up_to_date": 0,
+        "mootdx_count": 0,
+        "eastmoney_count": 0,
+        "failed_codes": []
+    }
+
+    # ---------- 多线程抓取 ---------- #
+    with ThreadPoolExecutor(max_workers=args.workers) as executor:
+        futures = [
+            executor.submit(
+                fetch_one,
+                code,
+                start,
+                end,
+                out_dir,
+                True,  # incremental
+                args.frequency,
+                use_backup,
             )
-        except Exception as e:
-            logger.error(f"第 {batch_num} 批处理出现异常: {e}")
-            continue
+            for code in codes
+        ]
         
-        # 批次间休息，避免过于频繁请求
-        if i + args.batch_size < len(codes):
-            logger.info(f"第 {batch_num}/{total_batches} 批完成，休息 {args.batch_delay} 秒...")
-            time.sleep(args.batch_delay)
+        # 进度条显示和统计收集
+        for future in tqdm(as_completed(futures), total=len(futures), desc="下载进度"):
+            result = future.result()
+            status = result["status"]
+            source = result["source"]
+            
+            results[status] += 1
+            
+            if source == "mootdx":
+                results["mootdx_count"] += 1
+            elif source == "eastmoney":
+                results["eastmoney_count"] += 1
+            
+            if status == "failed":
+                results["failed_codes"].append(result["code"])
 
+    # ---------- 输出统计结果 ---------- #
+    logger.info("=" * 50)
+    logger.info("抓取完成统计:")
+    logger.info("成功: %d, 失败: %d, 已最新: %d", 
+                results["success"], results["failed"], results["up_to_date"])
+    logger.info("数据源统计 - Mootdx: %d, 东方财富: %d", 
+                results["mootdx_count"], results["eastmoney_count"])
+    
+    if results["failed_codes"]:
+        logger.warning("失败股票代码: %s", ", ".join(results["failed_codes"][:10]))
+        if len(results["failed_codes"]) > 10:
+            logger.warning("... 还有 %d 只股票失败", len(results["failed_codes"]) - 10)
+    
+    success_rate = (results["success"] + results["up_to_date"]) / len(codes) * 100
+    logger.info("数据完整性: %.1f%% (%d/%d)", success_rate, 
+                results["success"] + results["up_to_date"], len(codes))
+    
     logger.info("全部任务完成，数据已保存至 %s", out_dir.resolve())
-
 
 if __name__ == "__main__":
     main()
