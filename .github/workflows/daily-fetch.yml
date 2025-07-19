@@ -34,8 +34,18 @@ jobs:
         
     - name: Step 1 - Fetch stock data
       run: |
+        echo "开始安装和设置环境..."
+        # 步骤1: 为 mootdx 选择最佳服务器并生成配置文件
+        python -m mootdx bestip
+        
         echo "开始获取股票数据..."
-        python fetch_kline.py --workers 5 --out ./data
+        # 步骤2: 运行主程序
+        python fetch_kline.py \
+          --workers 10 \
+          --out ./data \
+          --min-mktcap 50e8 \
+          --exclude-gem
+        
         echo "股票数据获取完成"
         
     - name: Step 2 - Select stocks
