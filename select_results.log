@@ -590,3 +590,9 @@
 2025-08-22 08:31:47,335 [INFO] 交易日: 2025-08-22
 2025-08-22 08:31:47,335 [INFO] 符合条件股票数: 1
 2025-08-22 08:31:47,335 [INFO] 002075
+2025-08-23 08:36:23,062 [INFO] 未指定 --date，使用最近日期 2025-08-22
+2025-08-23 08:36:23,067 [ERROR] 跳过配置 {'class': 'BBIKDJSelector', 'alias': '少妇战法', 'activate': True, 'params': {'j_threshold': 10, 'bbi_min_window': 20, 'max_window': 60, 'price_range_pct': 1, 'bbi_q_threshold': 0.3, 'j_q_threshold': 0.1}}：无法加载 Selector.BBIKDJSelector: No module named 'scipy'
+2025-08-23 08:36:23,068 [ERROR] 跳过配置 {'class': 'SuperB1Selector', 'alias': 'SuperB1战法', 'activate': True, 'params': {'lookback_n': 10, 'close_vol_pct': 0.02, 'price_drop_pct': 0.02, 'j_threshold': 10, 'j_q_threshold': 0.1, 'B1_params': {'j_threshold': 10, 'bbi_min_window': 20, 'max_window': 60, 'price_range_pct': 1, 'bbi_q_threshold': 0.3, 'j_q_threshold': 0.1}}}：无法加载 Selector.SuperB1Selector: No module named 'scipy'
+2025-08-23 08:36:23,068 [ERROR] 跳过配置 {'class': 'BBIShortLongSelector', 'alias': '补票战法', 'activate': True, 'params': {'n_short': 3, 'n_long': 21, 'm': 3, 'bbi_min_window': 2, 'max_window': 60, 'bbi_q_threshold': 0.2}}：无法加载 Selector.BBIShortLongSelector: No module named 'scipy'
+2025-08-23 08:36:23,069 [ERROR] 跳过配置 {'class': 'BreakoutVolumeKDJSelector', 'alias': 'TePu战法', 'activate': True, 'params': {'j_threshold': 1, 'j_q_threshold': 0.1, 'up_threshold': 3.0, 'volume_threshold': 0.6667, 'offset': 15, 'max_window': 60, 'price_range_pct': 1}}：无法加载 Selector.BreakoutVolumeKDJSelector: No module named 'scipy'
+2025-08-23 08:36:23,069 [ERROR] 跳过配置 {'class': 'PeakKDJSelector', 'alias': '填坑战法', 'activate': True, 'params': {'j_threshold': 10, 'max_window': 100, 'fluc_threshold': 0.03, 'j_q_threshold': 0.1, 'gap_threshold': 0.2}}：无法加载 Selector.PeakKDJSelector: No module named 'scipy'
