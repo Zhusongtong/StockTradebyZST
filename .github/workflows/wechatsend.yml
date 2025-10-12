@@ -25,12 +25,12 @@ jobs:
         python -m pip install --upgrade pip
         pip install requests numpy pandas scipy
     
-    # 4. 运行 Selector.py 生成日志
-    - name: 运行 Selector 程序
+    # 4. 运行 select_stock.py 生成日志
+    - name: 运行股票筛选程序
       run: |
-        echo "📊 开始运行 Selector.py..."
-        python Selector.py
-        echo "✅ Selector.py 运行完成"
+        echo "📊 开始运行 select_stock.py..."
+        python select_stock.py --data-dir ./data --config ./configs.json
+        echo "✅ select_stock.py 运行完成"
     
     # 5. 检查生成的日志文件
     - name: 检查日志文件
