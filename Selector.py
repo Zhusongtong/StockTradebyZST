@@ -60,7 +60,7 @@ def bbi_deriv_uptrend(
     bbi: pd.Series,
     *,
     min_window: int,
-    max_window: int | None = None,
+    max_window: Optional[int] = None,
     q_threshold: float = 0.0,
 ) -> bool:
     """
@@ -832,4 +832,5 @@ class MA60CrossVolumeWaveSelector:
             if self._passes_filters(hist):
                 picks.append(code)
         return picks
+
 
