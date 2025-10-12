@@ -46,7 +46,7 @@ jobs:
     # 6. 上传运行日志 (可选，用于调试)
     - name: 上传运行日志
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: workflow-logs
         path: |
