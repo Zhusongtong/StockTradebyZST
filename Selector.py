@@ -64,7 +64,7 @@ def bbi_deriv_uptrend(
     q_threshold: float = 0.0,
 ) -> bool:
     """
-    判断 BBI 是否“整体上升”。
+    判断 BBI 是否"整体上升"。
 
     令最新交易日为 T，在区间 [T-w+1, T]（w 自适应，w ≥ min_window 且 ≤ max_window）
     内，先将 BBI 归一化：BBI_norm(t) = BBI(t) / BBI(T-w+1)。
@@ -72,7 +72,7 @@ def bbi_deriv_uptrend(
     再计算一阶差分 Δ(t) = BBI_norm(t) - BBI_norm(t-1)。  
     若 Δ(t) 的前 q_threshold 分位数 ≥ 0，则认为该窗口通过；只要存在
     **最长** 满足条件的窗口即可返回 True。q_threshold=0 时退化为
-    “全程单调不降”（旧版行为）。
+    "全程单调不降"（旧版行为）。
 
     Parameters
     ----------
@@ -80,7 +80,7 @@ def bbi_deriv_uptrend(
         BBI 序列（最新值在最后一位）。
     min_window : int
         检测窗口的最小长度。
-    max_window : int | None
+    max_window : Optional[int]
         检测窗口的最大长度；None 表示不设上限。
     q_threshold : float, default 0.0
         允许一阶差分为负的比例（0 ≤ q_threshold ≤ 1）。
@@ -144,10 +144,10 @@ def _find_peaks(
 def last_valid_ma_cross_up(
     close: pd.Series,
     ma: pd.Series,
-    lookback_n: int | None = None,
+    lookback_n: Optional[int] = None,
 ) -> Optional[int]:
     """
-    查找“有效上穿 MA”的最后一个交易日 T（close[T-1] < ma[T-1] 且 close[T] ≥ ma[T]）。
+    查找"有效上穿 MA"的最后一个交易日 T（close[T-1] < ma[T-1] 且 close[T] ≥ ma[T]）。
     - 返回的是 **整数位置**（iloc 用）。
     - lookback_n: 仅在最近 N 根内查找；None 则全历史。
     """
@@ -171,7 +171,7 @@ def last_valid_ma_cross_up(
 def compute_zx_lines(
     df: pd.DataFrame,
     m1: int = 14, m2: int = 28, m3: int = 57, m4: int = 114
-) -> tuple[pd.Series, pd.Series]:
+) -> tuple:
     """返回 (ZXDQ, ZXDKX)
     ZXDQ = EMA(EMA(C,10),10)
     ZXDKX = (MA(C,14)+MA(C,28)+MA(C,57)+MA(C,114))/4
@@ -213,7 +213,7 @@ def zx_condition_at_positions(
     *,
     require_close_gt_long: bool = True,
     require_short_gt_long: bool = True,
-    pos: int | None = None,
+    pos: Optional[int] = None,
 ) -> bool:
     """
     在指定位置 pos（iloc 位置；None 表示当日）检查知行条件：
@@ -313,7 +313,7 @@ class BBIKDJSelector:
         if hist["close"].iloc[-1] < hist["MA60"].iloc[-1]:
             return False
 
-        # 寻找最近一次“有效上穿 MA60”的 T（使用 max_window 作为回看长度，避免过旧）
+        # 寻找最近一次"有效上穿 MA60"的 T（使用 max_window 作为回看长度，避免过旧）
         t_pos = last_valid_ma_cross_up(hist["close"], hist["MA60"], lookback_n=self.max_window)
         if t_pos is None:
             return False        
@@ -415,7 +415,7 @@ class SuperB1Selector:
 
         # ---------- Step-1: 搜索满足 BBIKDJ 的 t_m ----------
         lb_hist = hist.tail(self.lookback_n + 1)  # +1 以排除自身
-        tm_idx: int | None = None
+        tm_idx: Optional[int] = None
         for idx in lb_hist.index[:-1]:
             if self.bbi_selector._passes_filters(hist.loc[:idx]):
                 tm_idx = idx
@@ -528,7 +528,7 @@ class PeakKDJSelector:
             if oc_t <= oc_prev:             # 要求 peak_t > peak_(t-n)
                 continue
 
-            # 只有当“总峰数 ≥ 3”时才检查区间内其他峰 oc_max
+            # 只有当"总峰数 ≥ 3"时才检查区间内其他峰 oc_max
             if total_peaks >= 3 and idx < total_peaks - 2:
                 inter_oc = peaks_list.loc[idx + 1 : total_peaks - 2, "oc_max"]
                 if not (inter_oc < oc_prev).all():
@@ -544,7 +544,6 @@ class PeakKDJSelector:
                 continue
 
             target_peak = peak_prev
-            
             break
 
         if target_peak is None:
@@ -701,8 +700,8 @@ class MA60CrossVolumeWaveSelector:
     """
     条件：
     1) 当日 J 绝对低或相对低（J < j_threshold 或 J ≤ 近 max_window 根 J 的 j_q_threshold 分位）
-    2) 最近 lookback_n 内，存在一次“有效上穿 MA60”（t-1 收盘 < MA60, t 收盘 ≥ MA60）；
-       且从该上穿日 T 到今天的“上涨波段”日均成交量 ≥ 上穿前等长窗口的日均成交量 * vol_multiple
+    2) 最近 lookback_n 内，存在一次"有效上穿 MA60"（t-1 收盘 < MA60, t 收盘 ≥ MA60）；
+       且从该上穿日 T 到今天的"上涨波段"日均成交量 ≥ 上穿前等长窗口的日均成交量 * vol_multiple
        —— 上涨波段定义为 [T, today] 间的所有交易日（不做趋势单调性强约束，稳健且可复现）
     3) 近 ma60_slope_days（默认 5）个交易日的 MA60 回归斜率 > 0
     """
@@ -783,7 +782,7 @@ class MA60CrossVolumeWaveSelector:
         if seg_T_to_today.empty:
             return False
 
-        # 若并列最高，默认取“第一次”出现的那天；要“最后一次”可改见注释
+        # 若并列最高，默认取"第一次"出现的那天；要"最后一次"可改见注释
         tmax_label = seg_T_to_today["high"].idxmax()
         int_pos_T   = t_pos
         int_pos_Tmax = hist.index.get_loc(tmax_label)
@@ -832,5 +831,3 @@ class MA60CrossVolumeWaveSelector:
             if self._passes_filters(hist):
                 picks.append(code)
         return picks
-
-
