@@ -126,15 +126,24 @@ def main():
             logger.error("跳过配置 %s：%s", cfg, e)
             continue
 
-        picks = selector.select(trade_date, data)
+        # 添加异常处理，确保单个战法失败不影响其他战法
+        try:
+            picks = selector.select(trade_date, data)
 
-        # 将结果写入日志，同时输出到控制台
-        logger.info("")
-        logger.info("============== 选股结果 [%s] ==============", alias)
-        logger.info("交易日: %s", trade_date.date())
-        logger.info("符合条件股票数: %d", len(picks))
-        logger.info("%s", ", ".join(picks) if picks else "无符合条件股票")
-
+            # 将结果写入日志，同时输出到控制台
+            logger.info("")
+            logger.info("============== 选股结果 [%s] ==============", alias)
+            logger.info("交易日: %s", trade_date.date())
+            logger.info("符合条件股票数: %d", len(picks))
+            logger.info("%s", ", ".join(picks) if picks else "无符合条件股票")
+        except Exception as e:
+            logger.error("")
+            logger.error("============== [%s] 运行失败 ==============", alias)
+            logger.error("错误信息: %s", str(e))
+            logger.error("详细堆栈:", exc_info=True)
+            # 继续运行下一个战法，不中断整个流程
+            continue
 
 if __name__ == "__main__":
     main()
+
