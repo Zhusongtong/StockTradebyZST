@@ -23,27 +23,35 @@ jobs:
     - name: 安装 Python 依赖
       run: |
         python -m pip install --upgrade pip
-        pip install requests
+        pip install requests numpy pandas scipy
     
-    # 4. 检查文件是否存在
+    # 4. 运行 Selector.py 生成日志
+    - name: 运行 Selector 程序
+      run: |
+        echo "📊 开始运行 Selector.py..."
+        python Selector.py
+        echo "✅ Selector.py 运行完成"
+    
+    # 5. 检查生成的日志文件
     - name: 检查日志文件
       run: |
         if [ -f "select_results.log" ]; then
-          echo "✅ 日志文件存在"
-          cat select_results.log
+          echo "✅ 日志文件已生成"
+          echo "📄 日志文件内容预览:"
+          head -n 20 select_results.log
         else
-          echo "⚠️ 日志文件不存在，创建测试日志"
-          echo "这是一个测试日志内容 - $(date)" > select_results.log
+          echo "❌ 日志文件不存在"
+          exit 1
         fi
     
-    # 5. 运行微信推送脚本
+    # 6. 运行微信推送脚本
     - name: 运行微信推送
       env:
         SENDKEY: ${{ secrets.WECHAT_SENDKEY }}  # 从 GitHub Secrets 读取
       run: |
         python wechatsend.py
     
-    # 6. 上传运行日志 (可选，用于调试)
+    # 7. 上传运行日志 (可选，用于调试)
     - name: 上传运行日志
       if: always()
       uses: actions/upload-artifact@v4
